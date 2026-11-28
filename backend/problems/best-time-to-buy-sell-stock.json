@@ -1,0 +1,61 @@
+{
+  "id": "best-time-to-buy-sell-stock",
+  "title": "Best Time to Buy and Sell Stock",
+  "topic": "arrays",
+  "difficulty": "easy",
+  "statement": "You are given an array prices where prices[i] is the price of a stock on day i.\n\nYou may buy one share on one day and sell it on a later day. Return the largest profit you can make from a single buy followed by a single sell. If no profitable trade exists, return 0.",
+  "examples": [
+    {
+      "input": "prices = [7, 1, 5, 3, 6, 4]",
+      "output": "5",
+      "explanation": "Buy on day 1 at price 1 and sell on day 4 at price 6, for a profit of 5."
+    },
+    {
+      "input": "prices = [7, 6, 4, 3, 1]",
+      "output": "0",
+      "explanation": "Prices only fall, so no trade makes money."
+    }
+  ],
+  "constraints": [
+    "1 <= prices.length <= 10^5",
+    "0 <= prices[i] <= 10^4"
+  ],
+  "starter_code": "#include <vector>\nusing namespace std;\n\nclass Solution {\npublic:\n    int maxProfit(vector<int>& prices) {\n        \n    }\n};\n",
+  "reference_solution": "int maxProfit(vector<int>& prices) {\n    int minPrice = INT_MAX, best = 0;\n    for (int p : prices) {\n        minPrice = min(minPrice, p);\n        best = max(best, p - minPrice);\n    }\n    return best;\n}",
+  "optimal_complexity": "O(n) time, O(1) extra space",
+  "acceptable_approaches": [
+    "Single pass tracking the minimum price seen so far and the best profit so far",
+    "Kadane-style maximum subarray over day-to-day price differences",
+    "Brute force over all buy/sell pairs in O(n^2) is acceptable only as a starting point"
+  ],
+  "tricky_cases": [
+    {"input": "[7, 6, 4, 3, 1]", "expected": "0", "why": "prices only fall; must return 0, not a negative number"},
+    {"input": "[5]", "expected": "0", "why": "single day; no trade possible"},
+    {"input": "[2, 4, 1]", "expected": "2", "why": "the global minimum comes after the best sell day; buying at the global min is wrong"},
+    {"input": "[3, 3, 3]", "expected": "0", "why": "flat prices"},
+    {"input": "[1, 2]", "expected": "1", "why": "smallest profitable case; checks off-by-one in loops"}
+  ],
+  "clarifying_questions": [
+    "Can I make more than one transaction? (No, exactly one buy and one sell at most.)",
+    "Must I sell after I buy, not on the same day? (Selling the same day gives 0 profit, which is fine.)",
+    "What if no profit is possible? (Return 0.)",
+    "Can the array be empty? (No, at least one price.)",
+    "Can prices be negative? (No.)"
+  ],
+  "hints": [
+    "Think about what you need to know at each day to decide the best sale ending on that day.",
+    "If you sell on day i, the best buy is the lowest price before day i. Can you keep track of that as you go?",
+    "Walk through the array once, keeping the minimum price so far and the best profit so far."
+  ],
+  "follow_ups": [
+    "What if you could make as many transactions as you like, but hold at most one share at a time?",
+    "What if you could make at most two transactions?",
+    "What if each sale had a fixed transaction fee?"
+  ],
+  "common_mistakes": [
+    "Returning max(prices) - min(prices) without checking that the min comes before the max",
+    "Returning a negative value when prices only fall",
+    "Using O(n^2) nested loops and not improving it",
+    "Initialising the minimum to 0 instead of the first price or INT_MAX"
+  ]
+}
