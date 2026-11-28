@@ -61,7 +61,7 @@ export default function Report({ sessionId }: { sessionId: string }) {
     return (
       <div className="center-page">
         <div className="spinner" />
-        <p>Alex is reviewing your interview and tracing your code…</p>
+        <p>Ren is reviewing your interview and tracing your code…</p>
         <p className="muted">This usually takes under a minute.</p>
       </div>
     )
@@ -150,7 +150,7 @@ export default function Report({ sessionId }: { sessionId: string }) {
           {session.transcript.map((t, i) => (
             <p key={i}>
               <span className="muted">{String(Math.floor(t.elapsed_seconds / 60)).padStart(2, '0')}:{String(t.elapsed_seconds % 60).padStart(2, '0')}</span>{' '}
-              <b>{t.kind === 'ai' ? 'Alex' : 'You'}:</b> {t.text}
+              <b>{t.kind === 'ai' ? 'Ren' : 'You'}:</b> {t.text}
             </p>
           ))}
         </details>

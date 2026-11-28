@@ -109,7 +109,7 @@ class GroqProvider:
                 yield outcome
                 return
             log.warning("Groq returned an empty reply (attempt %d of %d)", attempt + 1, MAX_ATTEMPTS)
-        raise ProviderError("Alex didn't answer that time. Press Send again.")
+        raise ProviderError("Ren didn't answer that time. Press Send again.")
 
     async def _attempt(self, messages: list[dict], tools: list[dict]):
         stream = await get_client().chat.completions.create(

@@ -30,23 +30,23 @@ export function pauseRule(lastWords: string): PauseRule {
 }
 
 /**
- * Barge-in with an echo guard. While Alex speaks the mic stays on, so it also
- * hears Alex through the speakers. Only treat it as the candidate talking when
- * enough of the heard words are NOT in what Alex is saying.
+ * Barge-in with an echo guard. While Ren speaks the mic stays on, so it also
+ * hears Ren through the speakers. Only treat it as the candidate talking when
+ * enough of the heard words are NOT in what Ren is saying.
  */
 export function isBargeIn(
   heard: string,
-  alexSaid: string,
+  renSaid: string,
 ): { yes: boolean; newWords: string[]; candidateText: string } {
   const words = (t: string) => t.toLowerCase().match(/[a-z0-9']+/g) ?? []
-  const said = new Set(words(alexSaid))
+  const said = new Set(words(renSaid))
   const all = words(heard)
-  // Judge only the most recent words: the mic has been hearing Alex's voice since
-  // he started, and that echo would otherwise outweigh a real interruption.
+  // Judge only the most recent words: the mic has been hearing Ren's voice since
+  // she started, and that echo would otherwise outweigh a real interruption.
   const heardWords = all.slice(-12).filter((w) => w.length > 1)
   const newWords = heardWords.filter((w) => !said.has(w))
-  // The candidate's words: everything from the first word Alex didn't say,
-  // kept in order even where they happen to overlap with Alex's words.
+  // The candidate's words: everything from the first word Ren didn't say,
+  // kept in order even where they happen to overlap with Ren's words.
   const first = all.findIndex((w) => w.length > 1 && !said.has(w))
   const candidateText = first < 0 ? '' : all.slice(first).join(' ')
   return { yes: newWords.length >= 4 && newWords.length >= heardWords.length / 2, newWords, candidateText }
@@ -57,8 +57,10 @@ export function pauseNeeded(lastWords: string, phase: string): { ms: number; rul
   const rule = pauseRule(lastWords)
   const coding = phase === 'code'
   const ms = {
-    question: 1200,
-    normal: coding ? 3500 : 2000,
+    question: 1000,
+    // Chrome delivers the final words about half a second after you stop, so the
+    // real silence is roughly this plus 0.5 s.
+    normal: coding ? 3000 : 1500,
     continuing: coding ? 6000 : 4000,
     thinking: 12000,
   }[rule]

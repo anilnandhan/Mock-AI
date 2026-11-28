@@ -28,7 +28,7 @@ client_log = logging.getLogger("client")
 async def lifespan(app: FastAPI):
     init_db()
     all_problems()  # fail fast on an invalid problem file
-    tts.start()  # loads Alex's voice in the background
+    tts.start()  # loads Ren's voice in the background
     yield
 
 
@@ -137,7 +137,7 @@ class SpeakIn(BaseModel):
 
 @app.post("/api/tts")
 def speak(body: SpeakIn):
-    """One sentence of Alex's speech as WAV audio. 503 means: use the browser voice."""
+    """One sentence of Ren's speech as WAV audio. 503 means: use the browser voice."""
     text = body.text.strip()[:1000]
     if not text:
         raise HTTPException(400, "Nothing to say.")

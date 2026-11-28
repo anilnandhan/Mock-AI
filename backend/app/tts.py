@@ -1,4 +1,4 @@
-"""Alex's voice, made on this machine with Kokoro (open source, free, works offline).
+"""Ren's voice, made on this machine with Kokoro (open source, free, works offline).
 
 The model files (about 350 MB) are downloaded into backend/models/ the first time
 the server starts, then loaded in the background. Until the voice is ready, or if

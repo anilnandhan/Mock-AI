@@ -55,7 +55,7 @@ def test_groq_turns_and_report(groq_client, monkeypatch):
         [
             # Text, then a tool call split across fragments.
             [
-                chunk("Hi, I'm Alex. "),
+                chunk("Hi, I'm Ren. "),
                 chunk("Any questions?"),
                 chunk(tool_calls=[tc(0, id="call_a", name="update_interview", arguments=args[:20])]),
                 chunk(tool_calls=[tc(0, arguments=args[20:])], finish="tool_calls"),
@@ -79,7 +79,7 @@ def test_groq_turns_and_report(groq_client, monkeypatch):
     sid = c.post("/api/sessions", json={"problem_id": "best-time-to-buy-sell-stock"}).json()["id"]
 
     events = read_sse(c.post(f"/api/sessions/{sid}/turn", json={"event": "start", "code": "x"}))
-    assert "".join(e["text"] for e in events if e["type"] == "text") == "Hi, I'm Alex. Any questions?"
+    assert "".join(e["text"] for e in events if e["type"] == "text") == "Hi, I'm Ren. Any questions?"
     assert events[-2]["phase"] == "clarify"
 
     events = read_sse(c.post(f"/api/sessions/{sid}/turn", json={"event": "message", "text": "Can it be empty?", "code": "x"}))

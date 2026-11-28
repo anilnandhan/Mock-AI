@@ -4,7 +4,7 @@ An AI interviewer that runs a realistic 45-minute DSA interview by voice. The ca
 
 Status: **steps 0–5 built; not yet tested against the live AI (needs an API key). Step 6 (testing with people) next.**
 
-Confirmed choices: Sonnet 5.5 for the live interview, Opus 5.5 for the report, uv for Python, first problem Best Time to Buy and Sell Stock, interviewer "Alex", a friendly senior engineer.
+Confirmed choices: Sonnet 5.5 for the live interview, Opus 5.5 for the report, uv for Python, first problem Best Time to Buy and Sell Stock, interviewer "Ren", a friendly senior engineer.
 
 ---
 
@@ -259,4 +259,4 @@ Each score cites a moment: "At 12:40 you started coding before stating the compl
 1. Models: Sonnet 5.5 for the live interview, Opus 5.5 for the report?
 2. OK to install `uv` with Homebrew?
 3. First problem: Best Time to Buy and Sell Stock?
-4. Interviewer persona: a name and tone (for example "Alex, friendly senior engineer")?
+4. Interviewer persona: a name and tone (for example "Ren, friendly senior engineer")?

@@ -113,7 +113,7 @@ def test_problems_list_hides_private_fields(client):
 def test_full_turn_flow(client, monkeypatch):
     fake = FakeClient(
         [
-            make_message("Hi, I'm Alex. Any questions?", {"phase": "clarify", "hint_level_given": 0, "interview_over": False, "note": ""}, msg_id="m1"),
+            make_message("Hi, I'm Ren. Any questions?", {"phase": "clarify", "hint_level_given": 0, "interview_over": False, "note": ""}, msg_id="m1"),
             make_message("Yes, it can't be empty.", {"phase": "clarify", "hint_level_given": 0, "interview_over": False, "note": "asked about empty input"}, msg_id="m2"),
             make_message("", {"phase": "code", "hint_level_given": 1, "interview_over": False, "note": ""}, msg_id="m3"),
         ]
@@ -124,7 +124,7 @@ def test_full_turn_flow(client, monkeypatch):
 
     events = read_sse(client.post(f"/api/sessions/{sid}/turn", json={"event": "start", "code": "int x;"}))
     spoken = "".join(e["text"] for e in events if e["type"] == "text")
-    assert "Alex" in spoken
+    assert "Ren" in spoken
     assert events[-2] == {"type": "state", "phase": "clarify", "hint_level_max": 0, "status": "active"}
     assert events[-1] == {"type": "done"}
 

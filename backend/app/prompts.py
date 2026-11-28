@@ -22,7 +22,7 @@ PHASE_TARGET_MINUTES = {
     "wrap_up": 2,
 }
 
-INTERVIEWER_NAME = "Alex"
+INTERVIEWER_NAME = "Ren"
 
 
 def interviewer_system_prompt(problem: Problem, interview_minutes: int) -> str:

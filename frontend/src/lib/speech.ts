@@ -162,14 +162,21 @@ export async function requestMic(): Promise<string | null> {
 }
 
 const SENTENCE_END = /^([\s\S]*?[.?!])(\s+|$)/
+// The first words of a reply go to the voice as soon as a clause is complete
+// ("No, just one transaction: ..."), so Ren starts talking sooner.
+const FIRST_CLAUSE = /^([\s\S]{12,}?[,;:])(\s+)/
 
 type Spoken = { text: string; audio: Promise<Blob | null> }
+
+function joinText(a: string, b: string) {
+  return a && b ? `${a} ${b}` : a || b
+}
 
 /** When the server voice fails, use the browser voice for a while before trying again. */
 let serverVoiceDownUntil = 0
 
 /**
- * Fetch one sentence of Alex's voice from the backend (Kokoro). Returns null when
+ * Fetch one sentence of Ren's voice from the backend (Kokoro). Returns null when
  * the server voice is unavailable, so the browser voice is used for that sentence.
  */
 async function fetchServerVoice(text: string, signal: AbortSignal): Promise<Blob | null> {
@@ -199,7 +206,7 @@ async function fetchServerVoice(text: string, signal: AbortSignal): Promise<Blob
 }
 
 /**
- * Speaks Alex's reply sentence by sentence while it streams in. Each sentence's
+ * Speaks Ren's reply sentence by sentence while it streams in. Each sentence's
  * audio is requested from the server as soon as the sentence is complete, and
  * played in order; a sentence the server can't voice uses the browser voice.
  */
@@ -219,8 +226,18 @@ export class Speaker {
   /** Called once everything for the current reply has been spoken (or skipped). */
   onIdle: () => void = () => {}
 
+  /**
+   * Called as Ren's words are spoken, with everything said so far in this reply,
+   * so the screen can show the text in time with the voice.
+   */
+  onProgress: (spoken: string) => void = () => {}
+  private spokenDone = '' // sentences of this reply already spoken in full
+  private saidAny = false // has any part of this reply been queued yet
+
   begin() {
     this.cancelAll()
+    this.spokenDone = ''
+    this.saidAny = false
     this.buffer = ''
     this.streamDone = false
     this.muted = !this.enabled
@@ -229,6 +246,10 @@ export class Speaker {
   push(chunk: string) {
     this.buffer += chunk
     let m: RegExpMatchArray | null
+    if (!this.saidAny && !this.buffer.match(SENTENCE_END)?.[2] && (m = this.buffer.match(FIRST_CLAUSE))) {
+      this.say(m[1])
+      this.buffer = this.buffer.slice(m[0].length)
+    }
     // Speak each complete sentence; keep the unfinished tail.
     while ((m = this.buffer.match(SENTENCE_END)) && m[2] !== '') {
       this.say(m[1])
@@ -275,6 +296,7 @@ export class Speaker {
       dlog('voice: skipped sentence', { muted: true }, 'debug')
       return
     }
+    this.saidAny = true
     if (!this.abort) this.abort = new AbortController()
     this.queue.push({ text: clean, audio: fetchServerVoice(clean, this.abort.signal) })
     if (!this.playing) void this.run(this.gen)
@@ -287,27 +309,41 @@ export class Speaker {
       const blob = await item.audio
       if (gen !== this.gen) return
       dlog('voice: speaking', { text: item.text.slice(0, 80), via: blob ? 'server' : 'browser' })
-      const played = blob ? await this.playAudio(blob) : false
+      const reveal = (fraction: number) => {
+        if (gen === this.gen) this.reveal(item.text, fraction)
+      }
+      const played = blob ? await this.playAudio(blob, reveal) : false
       if (gen !== this.gen) return
-      if (!played) await this.playBrowser(item.text)
+      if (!played) await this.playBrowser(item.text, reveal)
       if (gen !== this.gen) return
+      this.spokenDone = joinText(this.spokenDone, item.text)
+      this.onProgress(this.spokenDone)
       this.queue.shift()
     }
     this.playing = false
     this.checkIdle()
   }
 
+  /** Show the first `fraction` of a sentence's words (rounded up, so text never lags the voice). */
+  private reveal(sentence: string, fraction: number) {
+    const words = sentence.split(/\s+/)
+    const n = Math.min(words.length, Math.max(1, Math.ceil(Math.min(1, fraction) * words.length)))
+    this.onProgress(joinText(this.spokenDone, words.slice(0, n).join(' ')))
+  }
+
   /** Plays server audio; resolves false if the browser refused to play it. */
-  private playAudio(blob: Blob): Promise<boolean> {
+  private playAudio(blob: Blob, reveal: (fraction: number) => void): Promise<boolean> {
     return new Promise((resolve) => {
       const url = URL.createObjectURL(blob)
       const audio = new Audio(url)
       let settled = false
+      let ticker: number | null = null
       const finish = (ok: boolean) => {
         if (settled) return
         settled = true
+        if (ticker !== null) window.clearInterval(ticker)
         if (this.stopCurrent === stop) this.stopCurrent = null
-        audio.onended = audio.onerror = null
+        audio.onended = audio.onerror = audio.onplaying = null
         URL.revokeObjectURL(url)
         resolve(ok)
       }
@@ -316,6 +352,14 @@ export class Speaker {
         finish(true)
       }
       this.stopCurrent = stop
+      audio.onplaying = () => {
+        // Reveal words in step with playback. A small lead keeps the text just ahead of the voice.
+        const tick = () => {
+          if (audio.duration > 0) reveal(audio.currentTime / audio.duration + 0.08)
+        }
+        tick()
+        if (ticker === null) ticker = window.setInterval(tick, 80)
+      }
       audio.onended = () => finish(true)
       audio.onerror = () => {
         dlog('voice: audio error', {}, 'warn')
@@ -329,8 +373,11 @@ export class Speaker {
   }
 
   /** Browser speech for one sentence. Resolves when it ends, errors, or goes quiet. */
-  private playBrowser(text: string): Promise<void> {
-    if (!speechSupported.synthesis) return Promise.resolve()
+  private playBrowser(text: string, reveal: (fraction: number) => void): Promise<void> {
+    if (!speechSupported.synthesis) {
+      reveal(1)
+      return Promise.resolve()
+    }
     return new Promise((resolve) => {
       const synth = window.speechSynthesis
       const u = new SpeechSynthesisUtterance(text)
@@ -340,16 +387,31 @@ export class Speaker {
       if (voice) u.voice = voice
       this.utterance = u
       let watchdog: number | null = null
+      let ticker: number | null = null
       let settled = false
+      let boundaries = false
       const finish = () => {
         if (settled) return
         settled = true
         if (watchdog !== null) window.clearInterval(watchdog)
+        if (ticker !== null) window.clearInterval(ticker)
         if (this.stopCurrent === finish) this.stopCurrent = null
         if (this.utterance === u) this.utterance = null
         resolve()
       }
       this.stopCurrent = finish
+      u.onstart = () => {
+        // Not every voice reports word boundaries, so also estimate from time (about 14 characters a second).
+        const started = performance.now()
+        reveal(0)
+        ticker = window.setInterval(() => {
+          if (!boundaries) reveal(((performance.now() - started) / 1000) * 14 / text.length + 0.08)
+        }, 80)
+      }
+      u.onboundary = (e) => {
+        boundaries = true
+        reveal((e.charIndex + (e.charLength || 1)) / text.length)
+      }
       u.onend = finish
       u.onerror = (e) => {
         dlog('voice: utterance error', { error: (e as SpeechSynthesisErrorEvent).error }, 'warn')
@@ -380,7 +442,7 @@ export class Speaker {
 }
 
 /**
- * Alex speaks with a female voice. The most natural voices come first: macOS
+ * Ren speaks with a female voice. The most natural voices come first: macOS
  * "Premium" / "Enhanced" voices (free downloads in System Settings > Accessibility >
  * Spoken Content > System voice > Manage Voices), then Chrome's Google voice, then
  * the standard macOS and Windows female voices.

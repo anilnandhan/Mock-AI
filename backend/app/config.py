@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # INFO logs every turn; DEBUG also logs full prompts and raw replies.
     log_level: str = "INFO"
 
-    # Alex's voice (Kokoro, runs locally). Set TTS_ENABLED=false to use the browser voice.
+    # Ren's voice (Kokoro, runs locally). Set TTS_ENABLED=false to use the browser voice.
     tts_enabled: bool = True
     tts_voice: str = "af_heart"  # others: af_sarah, af_bella, bf_emma, hf_alpha (Indian English) ...
     tts_speed: float = 1.0

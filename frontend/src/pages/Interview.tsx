@@ -6,6 +6,9 @@ import { dlog, setDebugSession } from '../lib/debug'
 import { REPORTS_ENABLED } from '../lib/features'
 import { Listener, Speaker, requestMic, speechSupported } from '../lib/speech'
 import { isBargeIn, pauseNeeded } from '../lib/turns'
+import {
+  CamIcon, CamOffIcon, CaptionsIcon, ChatIcon, DocIcon, HangUpIcon, MicIcon, MicOffIcon, TimerIcon,
+} from '../components/Icons'
 
 /**
  * Turn-taking:
@@ -16,18 +19,43 @@ import { isBargeIn, pauseNeeded } from '../lib/turns'
 type Mode = 'loading' | 'ready' | 'thinking' | 'speaking' | 'listening' | 'ended'
 
 // cut: the candidate kept talking or talked over this reply, so they didn't hear (all of) it.
-type ChatMessage = { role: 'ai' | 'candidate'; text: string; cut?: boolean }
+// spoken: while Ren's voice is reading the reply, what has been said aloud so far.
+// The screen shows only that, so the text appears in time with the voice.
+type ChatMessage = { role: 'ai' | 'candidate'; text: string; cut?: boolean; spoken?: string }
+
+/** Replace the last message if it is Ren's. */
+function updateLastAi(m: ChatMessage[], change: (msg: ChatMessage) => ChatMessage): ChatMessage[] {
+  const last = m[m.length - 1]
+  if (last?.role !== 'ai') return m
+  const next = change(last)
+  return next === last ? m : [...m.slice(0, -1), next]
+}
+
+/** Show the whole reply (voice finished, or turned off). */
+const showAll = (msg: ChatMessage) => (msg.spoken === undefined ? msg : { ...msg, spoken: undefined })
 
 const SILENCE_CHECK_MS = 3 * 60 * 1000
 const AUTO_SEND_KEY = 'mock-ai:auto-send'
 
-function loadAutoSend() {
+/** On/off preferences remembered in this browser. */
+function loadFlag(key: string, fallback: boolean) {
   try {
-    return localStorage.getItem(AUTO_SEND_KEY) !== 'off'
+    const v = localStorage.getItem(key)
+    return v === null ? fallback : v !== 'off'
   } catch {
-    return true
+    return fallback
   }
 }
+
+function saveFlag(key: string, on: boolean) {
+  try {
+    localStorage.setItem(key, on ? 'on' : 'off')
+  } catch {
+    /* private mode: the setting just isn't remembered */
+  }
+}
+
+const loadAutoSend = () => loadFlag(AUTO_SEND_KEY, true)
 
 const PHASE_LABELS: Record<string, string> = {
   intro: 'Intro',
@@ -48,7 +76,7 @@ export default function Interview({ sessionId }: { sessionId: string }) {
   const [typed, setTyped] = useState('')
   const [voiceOn, setVoiceOn] = useState(speechSupported.recognition && speechSupported.synthesis)
   const [error, setError] = useState<string | null>(null)
-  // The mic and Alex's voice are separate: a mic problem must not silence Alex.
+  // The mic and Ren's voice are separate: a mic problem must not silence Ren.
   const [micLive, setMicLive] = useState(false)
   const [micError, setMicError] = useState<string | null>(null)
   const thinkingSince = useRef(0)
@@ -58,6 +86,14 @@ export default function Interview({ sessionId }: { sessionId: string }) {
   const [autoSend, setAutoSend] = useState(loadAutoSend)
   const [holding, setHolding] = useState(false)
   const [countdown, setCountdown] = useState<number | null>(null)
+  // Call layout: side panels, captions and the optional self-view camera.
+  const [showProblem, setShowProblem] = useState(() => loadFlag('mock-ai:show-problem', true))
+  const [showChat, setShowChat] = useState(() => loadFlag('mock-ai:show-chat', false))
+  const [captions, setCaptions] = useState(() => loadFlag('mock-ai:captions', true))
+  const [camOn, setCamOn] = useState(false)
+  const [camError, setCamError] = useState<string | null>(null)
+  const camStream = useRef<MediaStream | null>(null)
+  const camVideo = useRef<HTMLVideoElement>(null)
 
   const listener = useRef(new Listener()).current
   const speaker = useRef(new Speaker()).current
@@ -77,10 +113,10 @@ export default function Interview({ sessionId }: { sessionId: string }) {
   const typedRef = useRef(typed)
   const autoSendRef = useRef(autoSend)
   const holdingRef = useRef(holding)
-  // The candidate kept talking after their turn was sent, or talked over Alex.
+  // The candidate kept talking after their turn was sent, or talked over Ren.
   const supersededRef = useRef(false) // this reply should not be spoken any further
   const interruptedRef = useRef(false) // tell the backend on the next turn
-  const replyTextRef = useRef('') // what Alex is saying now, for the echo guard
+  const replyTextRef = useRef('') // what Ren is saying now, for the echo guard
   const onHeardRef = useRef<(final: string, interim: string) => void>(() => {})
 
   modeRef.current = mode
@@ -143,6 +179,9 @@ export default function Interview({ sessionId }: { sessionId: string }) {
     }
     listener.onListeningChange = setMicLive
     listener.onError = (msg) => setMicError(msg)
+    speaker.onProgress = (spoken) => {
+      setMessages((m) => updateLastAi(m, (msg) => (msg.spoken === undefined || msg.spoken === spoken ? msg : { ...msg, spoken })))
+    }
     speaker.onIdle = () => {
       // The interviewer finished speaking: hand the turn to the candidate.
       if (supersededRef.current) return // the candidate already took the turn back
@@ -150,13 +189,14 @@ export default function Interview({ sessionId }: { sessionId: string }) {
         dlog('voice idle while still streaming; waiting', undefined, 'debug')
         return
       }
+      setMessages((m) => updateLastAi(m, showAll))
       if (status.current === 'ended') {
         setMode('ended')
         return
       }
       setMode('listening')
       lastActivity.current = Date.now()
-      // The mic stayed on while Alex spoke; drop anything it heard of his voice.
+      // The mic stayed on while Ren spoke; drop anything it heard of her voice.
       if (voiceOnRef.current) {
         listener.stop()
         listener.start()
@@ -195,7 +235,9 @@ export default function Interview({ sessionId }: { sessionId: string }) {
       let before: ChatMessage[] = []
       setMessages((m) => {
         before = m
-        return [...m, ...(text ? [{ role: 'candidate' as const, text }] : []), { role: 'ai', text: '' }]
+        // With voice on, Ren's words appear as they are spoken (see speaker.onProgress).
+        const reply: ChatMessage = { role: 'ai', text: '', spoken: voiceOnRef.current ? '' : undefined }
+        return [...m, ...(text ? [{ role: 'candidate' as const, text }] : []), reply]
       })
       thinkingSince.current = Date.now() // set before render so the wait notice never uses an old time
       setMode('thinking')
@@ -205,8 +247,8 @@ export default function Interview({ sessionId }: { sessionId: string }) {
       interruptedRef.current = false
       supersededRef.current = false
       replyTextRef.current = ''
-      // Keep listening while Alex thinks and speaks, so the candidate can carry on
-      // or cut in. (The echo guard below ignores Alex's own voice.)
+      // Keep listening while Ren thinks and speaks, so the candidate can carry on
+      // or cut in. (The echo guard below ignores Ren's own voice.)
       if (voiceOnRef.current && event !== 'end_early' && event !== 'time_up') listener.start()
 
       try {
@@ -264,15 +306,15 @@ export default function Interview({ sessionId }: { sessionId: string }) {
 
   const interrupt = useCallback(() => {
     if (modeRef.current !== 'speaking' && modeRef.current !== 'thinking') return
-    dlog('candidate interrupted Alex')
+    dlog('candidate interrupted Ren')
     takeTurnBack()
     if (voiceOnRef.current) {
-      listener.stop() // drop any of Alex's voice the mic picked up
+      listener.stop() // drop any of Ren's voice the mic picked up
       listener.start()
     }
   }, [listener, speaker])
 
-  /** The candidate takes the turn back from Alex (kept talking, cut in, or pressed Esc). */
+  /** The candidate takes the turn back from Ren (kept talking, cut in, or pressed Esc). */
   function takeTurnBack() {
     supersededRef.current = true
     interruptedRef.current = true
@@ -288,7 +330,7 @@ export default function Interview({ sessionId }: { sessionId: string }) {
     lastSpeechAt.current = Date.now()
   }
 
-  // Speech heard while it is Alex's turn.
+  // Speech heard while it is Ren's turn.
   onHeardRef.current = (final, interim) => {
     const m = modeRef.current
     if (m !== 'thinking' && m !== 'speaking') return
@@ -296,7 +338,7 @@ export default function Interview({ sessionId }: { sessionId: string }) {
     const heardNow = `${final} ${interim}`.trim()
     if (!heardNow) return
     if (m === 'thinking' && replyTextRef.current === '') {
-      // Alex hasn't said anything yet, so this can't be his echo: the candidate
+      // Ren hasn't said anything yet, so this can't be her echo: the candidate
       // simply kept talking after a pause. Their new words continue their answer.
       dlog('candidate kept talking; skipping the reply', { heard: heardNow.slice(0, 120) })
       takeTurnBack()
@@ -304,9 +346,9 @@ export default function Interview({ sessionId }: { sessionId: string }) {
     }
     const check = isBargeIn(heardNow, replyTextRef.current)
     if (check.yes) {
-      dlog('candidate talked over Alex; stopping', { heard: heardNow.slice(0, 120), newWords: check.newWords.slice(0, 12) })
+      dlog('candidate talked over Ren; stopping', { heard: heardNow.slice(0, 120), newWords: check.newWords.slice(0, 12) })
       takeTurnBack()
-      // What the mic heard is mixed with Alex's voice: restart, keeping only the
+      // What the mic heard is mixed with Ren's voice: restart, keeping only the
       // candidate's own words so their first words aren't lost.
       listener.stop()
       listener.start()
@@ -380,12 +422,44 @@ export default function Interview({ sessionId }: { sessionId: string }) {
     setAutoSend(next)
     setHolding(false)
     dlog(`auto-send ${next ? 'on' : 'off'}`)
+    saveFlag(AUTO_SEND_KEY, next)
+  }
+
+  function togglePanel(which: 'problem' | 'chat' | 'captions') {
+    const [value, set, key] = {
+      problem: [showProblem, setShowProblem, 'mock-ai:show-problem'],
+      chat: [showChat, setShowChat, 'mock-ai:show-chat'],
+      captions: [captions, setCaptions, 'mock-ai:captions'],
+    }[which] as [boolean, (v: boolean) => void, string]
+    set(!value)
+    saveFlag(key, !value)
+  }
+
+  // Self-view camera: only shown on this screen, never recorded or sent anywhere.
+  async function toggleCamera() {
+    setCamError(null)
+    if (camStream.current) {
+      camStream.current.getTracks().forEach((t) => t.stop())
+      camStream.current = null
+      setCamOn(false)
+      dlog('camera off')
+      return
+    }
     try {
-      localStorage.setItem(AUTO_SEND_KEY, next ? 'on' : 'off')
-    } catch {
-      /* private mode: the setting just isn't remembered */
+      camStream.current = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } })
+      setCamOn(true)
+      dlog('camera on')
+    } catch (e) {
+      dlog('camera failed', { name: (e as DOMException).name }, 'warn')
+      setCamError('Camera unavailable')
     }
   }
+
+  useEffect(() => {
+    if (camVideo.current) camVideo.current.srcObject = camOn ? camStream.current : null
+  }, [camOn])
+
+  useEffect(() => () => camStream.current?.getTracks().forEach((t) => t.stop()), [])
 
   function hold() {
     setHolding(true)
@@ -402,7 +476,7 @@ export default function Interview({ sessionId }: { sessionId: string }) {
       const elapsed = (Date.now() - startedAt.current) / 1000
       if (!timeUpSent.current && elapsed >= session.interview_minutes * 60) {
         timeUpSent.current = true
-        dlog('time is up; telling Alex')
+        dlog('time is up; telling Ren')
         void sendTurn('time_up')
         return
       }
@@ -413,7 +487,7 @@ export default function Interview({ sessionId }: { sessionId: string }) {
       }
       if (Date.now() - lastActivity.current > SILENCE_CHECK_MS) {
         lastActivity.current = Date.now()
-        dlog('3 minutes of silence; Alex will check in')
+        dlog('3 minutes of silence; Ren will check in')
         void sendTurn('silence')
       }
     }, 1000)
@@ -424,7 +498,7 @@ export default function Interview({ sessionId }: { sessionId: string }) {
     if (starting) return
     setStarting(true) // the mic prompt makes this async, so guard against a second click
     // Ask for the mic during the click, so the browser prompt appears now
-    // rather than silently failing after Alex's intro.
+    // rather than silently failing after Ren's intro.
     if (voiceOn && speechSupported.recognition) {
       const problem = await requestMic()
       setMicError(problem)
@@ -448,9 +522,11 @@ export default function Interview({ sessionId }: { sessionId: string }) {
     dlog(`voice toggled ${next ? 'on' : 'off'}`)
     setVoiceOn(next)
     if (!next) {
+      setShowChat(true) // typing happens in the transcript panel
       const spoken = listener.stop()
       if (spoken) setTyped((t) => (t ? `${t} ${spoken}` : spoken))
       speaker.interrupt()
+      setMessages((m) => updateLastAi(m, showAll))
     } else if (modeRef.current === 'listening') {
       void retryMic()
     }
@@ -486,10 +562,72 @@ export default function Interview({ sessionId }: { sessionId: string }) {
   const p = session.problem
   const pendingText = [heard.final, heard.interim, typed].filter(Boolean).join(' ').trim()
   const canSend = mode === 'listening' && (heard.final.trim() !== '' || typed.trim() !== '')
+  const lastMsg = messages[messages.length - 1]
+  const lastAiShown = lastMsg?.role === 'ai' && (lastMsg.spoken ?? lastMsg.text) !== ''
+
+  const lastAiText = lastMsg?.role === 'ai' ? (lastMsg.spoken ?? lastMsg.text) : ''
+  const renTalking = mode === 'speaking' && lastAiShown
+  const youTalking = mode === 'listening' && heard.interim.trim() !== ''
+  const tail = (t: string, n = 180) => (t.length > n ? '…' + t.slice(t.length - n).replace(/^\S*\s/, '') : t)
+
+  // One live line under the editor: Ren's words as she says them, then yours as you speak.
+  let caption: { who: string; text: React.ReactNode } | null = null
+  if (mode === 'thinking') caption = { who: 'Ren', text: <span className="interim">thinking…</span> }
+  else if (mode === 'speaking' && lastAiText) caption = { who: 'Ren', text: tail(lastAiText) }
+  else if (mode === 'listening' && (heard.final || heard.interim)) {
+    caption = {
+      who: 'You',
+      text: (
+        <>
+          {tail(heard.final, 140)} <span className="interim">{heard.interim}</span>
+        </>
+      ),
+    }
+  }
+
+  const statusLine = (
+    <div className={`status ${mode}`}>
+      {mode === 'thinking' &&
+        Date.now() - thinkingSince.current > 6000 &&
+        `Still waiting after ${Math.round((now - thinkingSince.current) / 1000)}s (the AI service is probably rate-limiting; it retries on its own)`}
+      {mode === 'speaking' && (
+        <button className="link" onClick={interrupt}>Interrupt Ren (Esc)</button>
+      )}
+      {mode === 'listening' && !voiceOn && 'Your turn: type your answer in the chat'}
+      {mode === 'listening' && voiceOn && micError && (
+        <span className="mic-error">
+          {micError} <button className="link" onClick={() => void retryMic()}>Try mic again</button>
+        </span>
+      )}
+      {mode === 'listening' && voiceOn && !micError && micLive && countdown !== null && (
+        <span className="auto-send">
+          Sending in {(countdown / 1000).toFixed(1)}s, keep talking to add more{' '}
+          <button className="link" onClick={hold}>Hold</button>
+          <button className="link" onClick={send}>Send now</button>
+        </span>
+      )}
+      {mode === 'listening' && voiceOn && !micError && micLive && countdown === null && (
+        <>
+          <span className="rec-dot" />{' '}
+          {holding
+            ? 'Holding. Take your time, speak again or press Send when ready.'
+            : autoSend
+              ? 'Your turn. Pause when you finish and it sends itself.'
+              : 'Your turn. Speak, then press Send (Ctrl+Enter).'}
+          {canSend && !autoSend && <button className="link" onClick={send}>Send</button>}
+        </>
+      )}
+      {mode === 'listening' && voiceOn && !micError && !micLive && (
+        <>
+          Mic is paused <button className="link" onClick={() => void retryMic()}>Resume mic</button>
+        </>
+      )}
+    </div>
+  )
 
   return (
-    <div className="interview">
-      <header className="topbar">
+    <div className="call">
+      <header className="call-top">
         <button className="link" onClick={() => navigate('/')}>← Mock-AI</button>
         <div className="title">{p.title}</div>
         <div className="phases">
@@ -498,180 +636,220 @@ export default function Interview({ sessionId }: { sessionId: string }) {
           ))}
         </div>
         <div className={`clock ${remaining < 300 ? 'warn' : ''}`}>{formatClock(remaining)}</div>
-        {speechSupported.recognition && (
-          <button className="ghost" onClick={toggleVoice} title="Turn voice on or off">
-            {voiceOn ? '🎙 Voice on' : '⌨️ Text only'}
-          </button>
-        )}
-        {speechSupported.recognition && voiceOn && (
-          <button className="ghost" onClick={toggleAutoSend} title="Send your turn automatically when you pause">
-            {autoSend ? '⏱ Auto-send on' : '⏱ Auto-send off'}
-          </button>
-        )}
-        {mode !== 'ended' && <button className="danger" onClick={endEarly}>End</button>}
       </header>
 
-      <main className="panes">
-        <section className="pane problem">
-          <div className="problem-meta">
-            <span className={`badge ${p.difficulty}`}>{p.difficulty}</span>
-            <span className="muted">{p.topic}</span>
-          </div>
-          <h2>{p.title}</h2>
-          <p className="statement">{p.statement}</p>
-          {p.examples.map((ex, i) => (
-            <div key={i} className="example">
-              <div className="example-label">Example {i + 1}</div>
-              <pre>
-                <b>Input:</b> {ex.input}
-                {'\n'}
-                <b>Output:</b> {ex.output}
-                {ex.explanation ? `\n${ex.explanation}` : ''}
-              </pre>
+      <main className={`stage ${showProblem ? 'with-problem' : ''}`}>
+        {showProblem && (
+          <aside className="side problem">
+            <div className="side-head">
+              <span>Problem</span>
+              <button className="link" onClick={() => togglePanel('problem')} aria-label="Hide problem">✕</button>
             </div>
-          ))}
-          <div className="example-label">Constraints</div>
-          <ul className="constraints">
-            {p.constraints.map((c) => <li key={c}><code>{c}</code></li>)}
-          </ul>
-        </section>
+            <div className="side-body">
+              <div className="problem-meta">
+                <span className={`badge ${p.difficulty}`}>{p.difficulty}</span>
+                <span className="muted">{p.topic}</span>
+              </div>
+              <h2>{p.title}</h2>
+              <p className="statement">{p.statement}</p>
+              {p.examples.map((ex, i) => (
+                <div key={i} className="example">
+                  <div className="example-label">Example {i + 1}</div>
+                  <pre>
+                    <b>Input:</b> {ex.input}
+                    {'\n'}
+                    <b>Output:</b> {ex.output}
+                    {ex.explanation ? `\n${ex.explanation}` : ''}
+                  </pre>
+                </div>
+              ))}
+              <div className="example-label">Constraints</div>
+              <ul className="constraints">
+                {p.constraints.map((c) => <li key={c}><code>{c}</code></li>)}
+              </ul>
+            </div>
+          </aside>
+        )}
 
-        <section className="pane editor">
+        <section className="shared">
           <div className="pane-head">
-            <span>C++</span>
-            <span className="muted">Not compiled — your interviewer reads it</span>
+            <span>C++ · shared editor</span>
+            <span className="muted">Not compiled. Your interviewer reads it.</span>
           </div>
-          <Editor
-            height="100%"
-            defaultLanguage="cpp"
-            defaultValue={session.code}
-            theme="vs-dark"
-            onMount={onEditorMount}
-            onChange={(v) => {
-              code.current = v ?? ''
-              lastActivity.current = Date.now()
-              lastTypeAt.current = Date.now()
-            }}
-            options={{
-              fontSize: 14,
-              minimap: { enabled: false },
-              scrollBeyondLastLine: false,
-              tabSize: 4,
-              readOnly: mode === 'ended',
-            }}
-          />
-        </section>
-
-        <section className="pane chat">
-          <div className="messages">
+          <div className="editor-wrap">
+            <Editor
+              height="100%"
+              defaultLanguage="cpp"
+              defaultValue={session.code}
+              theme="vs-dark"
+              onMount={onEditorMount}
+              onChange={(v) => {
+                code.current = v ?? ''
+                lastActivity.current = Date.now()
+                lastTypeAt.current = Date.now()
+              }}
+              options={{
+                fontSize: 14,
+                minimap: { enabled: false },
+                scrollBeyondLastLine: false,
+                tabSize: 4,
+                readOnly: mode === 'ended',
+              }}
+            />
             {mode === 'ready' && (
-              <div className="start-card">
-                <p>Your interviewer, Alex, will introduce the problem and talk with you just like a real interview.</p>
-                <ul>
-                  <li>Think out loud. Press <kbd>Send</kbd> or <kbd>Ctrl</kbd>+<kbd>Enter</kbd> when you finish speaking.</li>
-                  <li>Press <kbd>Esc</kbd> to interrupt Alex.</li>
-                  <li>Your code is not run. Explain it and walk through examples.</li>
-                  {voiceOn && <li>Chrome will ask for microphone access. Headphones help.</li>}
-                </ul>
-                <button className="primary big" disabled={starting} onClick={() => void startInterview()}>{starting ? 'Starting…' : 'Start interview'}</button>
+              <div className="overlay">
+                <div className="join-card">
+                  <h2>Ready to join?</h2>
+                  <p className="muted">Ren, your interviewer, will introduce the problem and talk with you like a real interview.</p>
+                  <ul>
+                    <li>Think out loud. When you pause, your turn sends itself.</li>
+                    <li>Talk over Ren or press <kbd>Esc</kbd> to interrupt.</li>
+                    <li>Your code is not run. Explain it and walk through examples.</li>
+                    {voiceOn && <li>Chrome will ask for microphone access. Headphones help.</li>}
+                  </ul>
+                  <div className="row">
+                    <button className="primary big" disabled={starting} onClick={() => void startInterview()}>
+                      {starting ? 'Joining…' : 'Join interview'}
+                    </button>
+                    <button className="big" onClick={() => void toggleCamera()}>{camOn ? 'Camera on' : 'Turn on camera'}</button>
+                  </div>
+                </div>
               </div>
             )}
-            {messages.filter((m) => m.text).map((m, i) => (
-              <div key={i} className={`msg ${m.role} ${m.cut ? 'cut' : ''}`}>
-                <div className="who">{m.role === 'ai' ? 'Alex' : 'You'}{m.cut ? ' (cut off: you kept talking)' : ''}</div>
-                <div className="bubble">{m.text}</div>
-              </div>
-            ))}
-            {mode === 'thinking' && <div className="msg ai"><div className="who">Alex</div><div className="bubble typing">…</div></div>}
-            {mode === 'listening' && (pendingText || (voiceOn && micLive)) && (
-              <div className="msg candidate draft">
-                <div className="who">You {pendingText ? '(not sent yet)' : ''}</div>
-                <div className="bubble">
-                  {pendingText ? (
-                    <>
-                      {heard.final} <span className="interim">{heard.interim}</span> {typed}
-                    </>
+            {mode === 'ended' && (
+              <div className="overlay">
+                <div className="join-card">
+                  <h2>The interview is over</h2>
+                  {REPORTS_ENABLED ? (
+                    <button className="primary big" onClick={() => navigate(`/report/${sessionId}`)}>View my report</button>
                   ) : (
-                    <span className="interim">Listening… start speaking</span>
+                    <>
+                      <p className="muted">Reports are turned off while testing (VITE_ENABLE_REPORTS).</p>
+                      <div className="row">
+                        <button className="primary big" onClick={() => navigate('/')}>New interview</button>
+                        <button className="big" onClick={() => togglePanel('chat')}>{showChat ? 'Hide transcript' : 'Show transcript'}</button>
+                      </div>
+                    </>
                   )}
                 </div>
               </div>
             )}
-            <div ref={chatEnd} />
+          </div>
+        </section>
+
+        <aside className="people">
+          <div className={`tile ren ${renTalking ? 'talking' : ''}`}>
+            <div className="avatar">R</div>
+            <div className="tile-name">
+              Ren <span className="muted">· interviewer</span>
+              {mode === 'thinking' && <span className="tile-state">thinking…</span>}
+            </div>
+          </div>
+          <div className={`tile you ${youTalking ? 'talking' : ''}`}>
+            <video ref={camVideo} autoPlay muted playsInline className={camOn ? 'on' : ''} />
+            {!camOn && <div className="avatar you">You</div>}
+            <div className="tile-name">
+              You{' '}
+              {!voiceOn ? <span className="muted">· muted</span> : mode === 'listening' && !micLive ? <span className="muted">· mic paused</span> : null}
+              {camError && <span className="muted"> · {camError}</span>}
+            </div>
           </div>
 
-          {error && <div className="notice error small">{error}</div>}
-
-          {mode === 'ended' ? (
-            <div className="composer ended">
-              <p>The interview is over.</p>
-              {REPORTS_ENABLED ? (
-                <button className="primary big" onClick={() => navigate(`/report/${sessionId}`)}>View my report</button>
-              ) : (
-                <>
-                  <p className="muted">Reports are turned off while testing (VITE_ENABLE_REPORTS).</p>
-                  <button className="primary big" onClick={() => navigate('/')}>New interview</button>
-                </>
+          {showChat && (
+            <div className="chat-panel">
+              <div className="side-head">
+                <span>Transcript</span>
+                <button className="link" onClick={() => togglePanel('chat')} aria-label="Hide transcript">✕</button>
+              </div>
+              <div className="messages">
+                {messages.filter((m) => m.spoken ?? m.text).map((m, i) => (
+                  <div key={i} className={`msg ${m.role} ${m.cut ? 'cut' : ''}`}>
+                    <div className="who">{m.role === 'ai' ? 'Ren' : 'You'}{m.cut ? ' (cut off)' : ''}</div>
+                    <div className="bubble">{m.spoken ?? m.text}</div>
+                  </div>
+                ))}
+                {mode === 'listening' && pendingText && (
+                  <div className="msg candidate draft">
+                    <div className="who">You (not sent yet)</div>
+                    <div className="bubble">
+                      {heard.final} <span className="interim">{heard.interim}</span> {typed}
+                    </div>
+                  </div>
+                )}
+                <div ref={chatEnd} />
+              </div>
+              {mode !== 'ended' && mode !== 'ready' && (
+                <div className="composer-row">
+                  <textarea
+                    value={typed}
+                    placeholder={voiceOn ? 'Or type here…' : 'Type your answer…'}
+                    rows={2}
+                    onChange={(e) => {
+                      setTyped(e.target.value)
+                      lastActivity.current = Date.now()
+                      lastTypeAt.current = Date.now()
+                    }}
+                  />
+                  <button className="primary" disabled={!canSend} onClick={send}>Send</button>
+                </div>
               )}
             </div>
-          ) : mode !== 'ready' && (
-            <div className="composer">
-              <div className={`status ${mode}`}>
-                {mode === 'thinking' &&
-                  (Date.now() - thinkingSince.current > 6000
-                    ? `Alex is thinking… still waiting after ${Math.round((now - thinkingSince.current) / 1000)}s (the AI service is probably rate-limiting; it retries on its own)`
-                    : 'Alex is thinking…')}
-                {mode === 'speaking' && (
-                  <>
-                    Alex is speaking <button className="link" onClick={interrupt}>Interrupt (Esc)</button>
-                  </>
-                )}
-                {mode === 'listening' && !voiceOn && 'Your turn — type your answer'}
-                {mode === 'listening' && voiceOn && micError && (
-                  <span className="mic-error">
-                    🎙 {micError} <button className="link" onClick={() => void retryMic()}>Try mic again</button>
-                  </span>
-                )}
-                {mode === 'listening' && voiceOn && !micError && micLive && countdown !== null && (
-                  <span className="auto-send">
-                    Sending in {(countdown / 1000).toFixed(1)}s — keep talking to add more{' '}
-                    <button className="link" onClick={hold}>Hold</button>
-                  </span>
-                )}
-                {mode === 'listening' && voiceOn && !micError && micLive && countdown === null && (
-                  <>
-                    <span className="rec-dot" />{' '}
-                    {holding
-                      ? 'Holding — take your time. Speak again or press Send when ready.'
-                      : autoSend
-                        ? 'Listening — pause when you finish and it sends itself'
-                        : 'Listening — speak, then press Send (Ctrl+Enter)'}
-                  </>
-                )}
-                {mode === 'listening' && voiceOn && !micError && !micLive && (
-                  <>
-                    Mic is paused <button className="link" onClick={() => void retryMic()}>Resume mic</button>
-                  </>
-                )}
-                {mode === 'loading' && 'Loading…'}
-              </div>
-              <div className="composer-row">
-                <textarea
-                  value={typed}
-                  placeholder={voiceOn ? 'Or type here…' : 'Type your answer…'}
-                  rows={2}
-                  onChange={(e) => {
-                    setTyped(e.target.value)
-                    lastActivity.current = Date.now()
-                    lastTypeAt.current = Date.now()
-                  }}
-                />
-                <button className="primary" disabled={!canSend} onClick={send}>Send</button>
-              </div>
+          )}
+        </aside>
+      </main>
+
+      {error && <div className="notice error small">{error}</div>}
+
+      {mode !== 'ready' && mode !== 'ended' && (
+        <div className="caption-bar">
+          {captions && caption && (
+            <div className="caption">
+              <span className="caption-who">{caption.who}:</span> {caption.text}
             </div>
           )}
-        </section>
-      </main>
+          {statusLine}
+        </div>
+      )}
+
+      <footer className="controls">
+        <div className="controls-left muted">{formatClock(elapsed)} elapsed</div>
+        <div className="controls-mid">
+          {speechSupported.recognition && (
+            <button className={`round ${voiceOn ? '' : 'off'}`} onClick={toggleVoice}
+              title={voiceOn ? 'Turn voice off (type instead)' : 'Turn voice on'} aria-label="Voice">
+              {voiceOn ? <MicIcon /> : <MicOffIcon />}
+            </button>
+          )}
+          <button className={`round ${camOn ? '' : 'off'}`} onClick={() => void toggleCamera()}
+            title={camOn ? 'Turn camera off' : 'Turn camera on (only you see it)'} aria-label="Camera">
+            {camOn ? <CamIcon /> : <CamOffIcon />}
+          </button>
+          <button className={`round ${captions ? 'active' : ''}`} onClick={() => togglePanel('captions')}
+            title="Captions" aria-label="Captions">
+            <CaptionsIcon />
+          </button>
+          <button className={`round ${showProblem ? 'active' : ''}`} onClick={() => togglePanel('problem')}
+            title="Problem statement" aria-label="Problem">
+            <DocIcon />
+          </button>
+          <button className={`round ${showChat ? 'active' : ''}`} onClick={() => togglePanel('chat')}
+            title="Transcript and typing" aria-label="Transcript">
+            <ChatIcon />
+          </button>
+          {speechSupported.recognition && voiceOn && (
+            <button className={`round ${autoSend ? 'active' : ''}`} onClick={toggleAutoSend}
+              title={autoSend ? 'Auto-send on: your turn sends when you pause' : 'Auto-send off: press Send'} aria-label="Auto-send">
+              <TimerIcon />
+            </button>
+          )}
+          {mode !== 'ended' && (
+            <button className="hangup" onClick={endEarly} title="End the interview" aria-label="End interview">
+              <HangUpIcon /> End
+            </button>
+          )}
+        </div>
+        <div className="controls-right" />
+      </footer>
     </div>
   )
 }
